@@ -1,0 +1,12 @@
+./software/plink2 \
+--pfile ./plink-format/STITCH/WholeGenome2 'vzs' \
+--read-freq ./plink-format/STITCH/WholeGenome2.afreq \
+--glm \
+--maf 0.05 \
+--hwe 1e-6 \
+--geno 0.1 dosage \
+--pheno ./phenotype_genaral/pheno.csv \
+--pheno-quantile-normalize \
+--covar ./plink-format/STITCH/basevar_PCA_age.eigenvec \
+--covar-variance-standardize \
+--out ./output/GENERAL/GWAS
