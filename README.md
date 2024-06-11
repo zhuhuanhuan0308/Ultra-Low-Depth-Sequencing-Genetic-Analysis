@@ -7,7 +7,8 @@ This repository serves as a dedicated space for housing the codebase used in our
 The code within this repository is licensed under the [MIT License](./LICENSE.md). Please refer to the license file for more information on the terms and conditions of using and contributing to this project.
 
 For more detailed information on the methodology and results, please refer to our accompanying publication:
-1. 
+1. https://doi.org/10.1101/2023.11.23.23298979
+2. https://doi.org/10.1101/2023.11.23.23298977
 
 ## 1. Sequecing data preprocessing and genotype imputaion
 ### 1.1. Alignment
