@@ -294,154 +294,288 @@ ofile=$3
 ```
 usage:
 ```bash
-bash glm_2_h2.sh ./output/GENERAL/GWAS.GDM_AUC.glm.linear.add GDM_AUC ./output/GENERAL/h2
-bash rg.sh ./output/GENERAL/munge/GDM_AUC.ldsc.sumstats.gz ./output/GENERAL/munge/pheno.ldsc.sumstats.gz ./output/GENERAL/rg/RG_GDM_AUC_pheno
+bash glm_2_h2.sh ./output/GENERAL/GWAS.phenotype.add phenotype ./output/GENERAL/h2
+bash rg.sh ./output/GENERAL/munge/phenotype1.ldsc.sumstats.gz ./output/GENERAL/munge/phenotype2.ldsc.sumstats.gz ./output/GENERAL/rg/RG_phenotype1_phenotype2
 ```
 
-### 2.3.MendelianRandomization(MR)
-code: run_MR.R
+### 2.3. Gene expression analysis 
+code: gtex.R
 ```R
-library(TwoSampleMR)
-library(dplyr)
-library(ieugwasr)
-
-mr_results_list <- list()
-result_list <- list()
-r<-data.frame()
-
-for (ef in exposure_files) {
-  # Read exposure data
-  exp_data <- read_exposure_data(ef, sep = "\t")
-
-  exp_data <- clump_data(exp_data, clump_kb = 10000, clump_r2 = 0.2, clump_p1 = 1, clump_p2 = 1)
-  exp_data<-exp_data %>% filter(SNP %in% clump_data$rsid)
-
-  for (of in outcome_files) {
-    # Read outcome data
-    out_data <- read_outcome_data(of, sep = "\t")
-  
-    h <- harmonise_data(exposure_dat = exp_data, outcome_dat = out_data)
-    h <- h %>%
-      mutate(
-        beta.exposure = if_else(effect_allele.exposure != effect_allele.outcome, -beta.exposure, beta.exposure),
-        effect_allele.exposure = if_else(effect_allele.exposure != effect_allele.outcome, other_allele.exposure, effect_allele.exposure),
-        other_allele.exposure = if_else(effect_allele.exposure != effect_allele.outcome, effect_allele.exposure, other_allele.exposure)
-      )
-    
-    dat <- mr(h, parameters = default_parameters(), method_list = c("mr_egger_regression", "mr_ivw", "mr_weighted_median"))
-
-    exposure <- dat$exposure
-    outcome <- dat$outcome
-    method <- dat$method
-    nsnp <- dat$nsnp
-    b <- dat$b
-    se <- dat$se
-    pval <- dat$pval
-    result_df <- data.frame(exposure, outcome, method, nsnp, b, se, pval)
-    r<-rbind(r,result_df)
-    result_list[[basename_prefix]] <- result_df
-
-    write.table(
-      x = result_df,
-      file = output_file,
-      sep = ",", 
-      col.names = FALSE, 
-      row.names = FALSE, 
-      append = TRUE 
-    )
-  }
-}
-```
-
-
-### 2.4.Transcriptome-wide association study(TWAS)
-code: run_TWAS.R
-```R
-library(RSQLite)
-library(stringr)
 library(data.table)
-library(TwoSampleMR)
+dat = as.data.frame(fread("GTEx_Analysis_2017-06-05_v8_RNASeQCv1.1.9_gene_median_tpm.gct.gz",header=T))
+list = read.table("gene.list.txt",header=F)[,1]
+sub = dat[dat$Description %in% list,]
+sub2 = sub[,-c(1:2)]
+mapply = apply(sub2,1,{function(x) (x-min(x))/(max(x)-min(x))})
+# mapply = apply(sub2,1,{function(x) qqnorm(x,plot.it=F)$x})
 
-####
-#### take an example of one tissue "ctimp_Adipose_Subcutaneous.db"
-####
-
-########### find eQTLs on gene ESR1
-filename = paste0("ctimp_Adipose_Subcutaneous.db")
-
-sqlite.driver=dbDriver("SQLite")
-db=dbConnect(sqlite.driver,dbname=filename)
-dbListTables(db)
-mytable=dbReadTable(db,"weights")
-mytable[c('chr', 'pos','allele')] <- str_split_fixed(mytable$varID, '_', 3)
-esr1 = mytable[mytable$chr == "chr6" & mytable$pos > 151640495 & mytable$pos < 152153274,]
-
-# esr1 = mytable[mytable$gene == "ENSG00000091831.22",]
-write.table(esr1,paste0("ctimp_Adipose_Subcutaneous.db.txt"),row.names = F,quote = F,col.names = T)
-
-########### clump eQTLs
-wt = as.data.frame(fread("ctimp_Adipose_Subcutaneous.db.txt",header=T))
-colnames(wt)[c(2,7,8)] = c("SNP","chr_name","chrom_start")
-wt$chr_name = gsub("chr","",wt$chr_name)
-
-clp = clump_data(wt, clump_kb = 10000, clump_r2 = 0.2, clump_p1 = 1, clump_p2 = 1, pop = "EUR")
-colnames(clp)[c(2,7,8)] = c("rsid","chr","pos")
-
-write.table(clp,paste0("clump_ctimp_Adipose_Subcutaneous.db.txt"),row.names = F,quote = F,col.names = T)
-
-############# make inference on causal effects
-
-##disease
-gdm = as.data.frame(fread("pheno_quantitative_40.csv",header=T))
-
-##expression
-traw = as.data.frame(fread("ESR1.traw",header = T)) ##indiviual-level genotype matrix on ESR1
-
-eqtl = as.data.frame(fread(paste0("clump_ctimp_Adipose_Subcutaneous.db.txt"),header = T))
-
-snp = intersect(eqtl$pos, traw$POS)
-
-subeqtl = eqtl[match(snp,eqtl$pos),]
-subtraw = traw[match(snp,traw$POS),]
-print(identical(subeqtl$ref_allele,subtraw$COUNTED))
-
-subeqtl[which(subeqtl$ref_allele!=subtraw$COUNTED),"weight"] = -subeqtl[which(subeqtl$ref_allele!=subtraw$COUNTED),"weight"]
-
-prs = t(subtraw[,-c(1:6)]) %*% (subeqtl$weight)
-
-## disease
-smp = intersect(row.names(prs),paste0("0_",gdm$IID))
-
-subprs = prs[match(smp,row.names(prs)),]
-subgdm = gdm[match(smp,paste0("0_",gdm$IID)),]
-
-out = summary(glm(subgdm$OGLU~subprs,family = "gaussian"))$coefficients
-pv = out[2,4]
+slt = mapply[,-8]
+rmeans = rowMeans(slt)
+com = cbind.data.frame(colnames(sub2),rmeans)
+out = com[order(com[,2],decreasing=T),]
 ```
 
-### 2.5.Drug target analysis
-code: run_drug_target.sh
+
+### 2.4. Pathway enrichment analysis
+code: PASCAL.sh
 ```bash
-#step1_magma_annotation
-magma \
---annotate window=35,10 \
---snp-loc 1kgp_eas.bim \
---gene-loc NCBI37.3.gene.loc \
---out Annotation
+cd ./PASCAL/
+./PASCAL/Pascal \
+--pval=${ifile} \
+--runpathway=on \
+--custom=ASN \
+--customdir=./PASCAL/resources/ASN/CHR \
+--outsuffix=${ofile}
+```
 
-#step2_gene_analysis
-#use=SNP column, P column ncol=N column
-magma \
---bfile 1kgp_eas \
---pval GWAS_pheno.glm use=4,14 ncol=10 \
---gene-annot Annotation.genes.annot \
---gene-model multi \
---out GWAS_pheno
 
-#step3_magma_Gene-set_analysis
-magma \
---gene-results GWAS_pheno.genes.raw \
---set-annot drug_gene_set col=1,2 \
---out GWAS_pheno.drug
+### 2.5. Partitioning heritability analysis
+code: ph2.sh
+```bash
+./envs/python27/bin/python2.7 \
+./software/ldsc-master/ldsc.py \
+--h2-cts ${ofiles}/${name}.sumstats.gz \
+--ref-ld-chr ./ldsc_reference/1000G_Phase3_EAS_baselineLD_v2.2_ldscore/baselineLD. \
+--w-ld-chr ./ldsc_reference/1000G_Phase3_EAS_weights_hm3_no_MHC/weights.EAS.hm3_noMHC. \
+--frqfile-chr ./ldsc_reference/1000G_Phase3_EAS_plinkfiles/1000G.EAS.QC. \
+--ref-ld-chr-cts ./ldsc_reference/Multi_tissue_gene_expr.EAS.ldcts \
+--out ${ofiles}/${name}.ph2
+```
 
+### 2.6. Mendelian randomization analysis
+code: MR.R
+```R
+library(TwoSampleMR)
+library(data.table)
+library(R.utils)
+
+ss = read.table("file_list.txt",header = T)[,1]
+cc = as.data.frame(fread("case-control-2.txt",header = T))
+idx = read.table("idx.txt",header = F)[,1]
+
+####
+which(pvals < 0.05/(51*46),arr.ind = T)
+
+cl = cc[,2]
+which(cl == "Asthma")
+which(cl == 'Graves_disease')
+which(cl == 'Prostate_cancer')
+which(cl == 'Urolithiasis')
+####
+n_wh = length(ss)
+n_bbj = nrow(cc)
+
+pvals = read.table('MR.pvals.final.txt',header = T)
+
+ord <- fread('catagory_order.txt')
+pvals <- pvals[as.numeric(na.omit(match(ord$Phenoname, rownames(pvals)))),]
+ord <- ord[as.numeric(na.omit(match(rownames(pvals),ord$Phenoname))),]
+
+rownames(pvals) <- ord$Abbreviation
+
+colnames(pvals) <- c("Rheumatoid arthritis in Asian",
+                     "Open-angle glaucoma",
+                     "Type 2 Diabetes",
+                     "Smoking initiation",
+                     "Smoking cessation",
+                     "Arrhythmia",
+                     "Asthma",
+                     "Atopic dermatitis",
+                     "Biliary tract cancer",
+                     "Cataract",
+                     "Cerebral aneurysm",
+                     "Cervical cancer",
+                     "Chronic hepatitis B",
+                     "Chronic hepatitis C",
+                     "Chronic obstructive pulmonary disease",
+                     "Cirrhosis",
+                     "Congestive heart failure",
+                     "Drug eruption",
+                     "Endometrial cancer",
+                     "Endometriosis",
+                     "Epilepsy",
+                     "Esophageal cancer",
+                     "Gastric cancer",
+                     "Glaucoma",
+                     "Graves disease",
+                     "Hematological malignancy",
+                     "Interstitial lung disease",
+                     "Ischemic stroke",
+                     "Keloid",
+                     "Lung cancer",
+                     "Nephrotic syndrome",
+                     "Osteoporosis",
+                     "Ovarian cancer",
+                     "Pancreatic cancer",
+                     "Periodontal disease",
+                     "Peripheral artery disease",
+                     "Pollinosis",
+                     "Prostate cancer",
+                     "Pulmonary tuberculosis",
+                     "Rheumatoid arthritis",
+                     "Type 2 diabetes",
+                     "Urolithiasis",
+                     "Uterine fibroids",
+                     "hepatocellular carcinoma",
+                     "Breast cancer",
+                     "Coronary artery disease")
+  
+  dd <- matrix(data = c(35,5,4,17,49,10,29,41,42,42), byrow = F, ncol = 2)
+for (x in 1:5) {
+  i = dd[x,1]
+  j = dd[x,2]
+
+  wh = as.data.frame(fread(paste0("WH/",ss[i],".ss"),header = T))
+  wh$pvalue = as.numeric(wh$pvalue)
+  wh_sig = wh[wh$pvalue < 5e-08 & wh$SNP != ".",]
+  exposure_dat = format_data(
+    wh_sig,
+    type = "exposure",
+    phenotype_col = "trait",
+    snp_col = "SNP",
+    beta_col = "beta",
+    se_col = "se",
+    eaf_col = "eaf",
+    effect_allele_col = "effect_allele",
+    other_allele_col = "other_allele",
+    pval_col = "pvalue",
+    samplesize_col = "samplesize"
+  )
+  exposure_dat$chr.exposure = gsub("chr","",exposure_dat$chr.exposure)
+  
+  exp_dat = clump_data(
+    exposure_dat,
+    clump_kb = 10000,
+    clump_r2 = 0.1,
+    clump_p1 = 1,
+    clump_p2 = 1,
+    pop = "EAS"
+  )
+  
+
+  trait = cc[j,2]
+  ncase = cc[j,3]
+  ncontrol = cc[j,4]
+  
+  bbj = as.data.frame(fread(paste0("BBJ/","phenocode-",trait,".tsv.gz"),header = T))
+  bbj_slt = bbj[bbj$rsids %in% exp_dat$SNP,]
+  bbj_slt$trait = trait
+  bbj_slt$ncase = ncase
+  bbj_slt$ncontrol = ncontrol
+  
+  out_dat = format_data(
+    bbj_slt,
+    type = "outcome",
+    phenotype_col = "trait",
+    snp_col = "rsids",
+    beta_col = "beta",
+    se_col = "sebeta",
+    eaf_col = "maf",
+    effect_allele_col = "alt",
+    other_allele_col = "ref",
+    pval_col = "pval",
+    ncase_col = "ncase",
+    ncontrol_col = "ncontrol",
+  )
+  
+  dat <- harmonise_data(exp_dat, out_dat)
+  res <- mr(dat)
+
+  mr_pleiotropy_test(dat)
+  mr_heterogeneity(dat)
+  
+  pdf(paste0(ss[i],'_VS_',trait,'.pdf'),height = 4,width = 4)
+  single <- mr_leaveoneout(dat)
+  mr_leaveoneout_plot(single)
+  dev.off()
+  x = x+1
+}  
+  
+library(MRPRESSO)
+library(MendelianRandomization)
+
+mr_scatter_plot(res, dat)
+mr_plot(MRAllObject_all)
+
+
+dd <- matrix(data = c(35,5,17,49,10,29,42,46), byrow = F, ncol = 2)
+a <- matrix(NA, ncol = 11, nrow = 4)
+for (x in c(1:4)) {
+  i = dd[x,1]
+  #35,5,4,17,49
+  j = dd[x,2]
+  #10,29,41,42,42
+  wh = as.data.frame(fread(paste0("WH/",ss[i],".ss"),header = T))
+  wh$pvalue = as.numeric(wh$pvalue)
+  wh_sig = wh[wh$pvalue < 5e-08 & wh$SNP != ".",]
+  exposure_dat = format_data(
+    wh_sig,
+    type = "exposure",
+    phenotype_col = "trait",
+    snp_col = "SNP",
+    beta_col = "beta",
+    se_col = "se",
+    eaf_col = "eaf",
+    effect_allele_col = "effect_allele",
+    other_allele_col = "other_allele",
+    pval_col = "pvalue",
+    samplesize_col = "samplesize"
+  )
+  exposure_dat$chr.exposure = gsub("chr","",exposure_dat$chr.exposure)
+  
+  exp_dat = clump_data(
+    exposure_dat,
+    clump_kb = 10000,
+    clump_r2 = 0.1,
+    clump_p1 = 1,
+    clump_p2 = 1,
+    pop = "EAS"
+  )
+  trait = cc[j,2]
+  ncase = cc[j,3]
+  ncontrol = cc[j,4]
+  
+  bbj = as.data.frame(fread(paste0("BBJ/","phenocode-",trait,".tsv.gz"),header = T))
+  bbj_slt = bbj[bbj$rsids %in% exp_dat$SNP,]
+  bbj_slt$trait = trait
+  bbj_slt$ncase = ncase
+  bbj_slt$ncontrol = ncontrol
+  
+  out_dat = format_data(
+    bbj_slt,
+    type = "outcome",
+    phenotype_col = "trait",
+    snp_col = "rsids",
+    beta_col = "beta",
+    se_col = "sebeta",
+    eaf_col = "maf",
+    effect_allele_col = "alt",
+    other_allele_col = "ref",
+    pval_col = "pval",
+    ncase_col = "ncase",
+    ncontrol_col = "ncontrol",
+  )
+  
+  dat <- harmonise_data(exp_dat, out_dat)
+  res <- mr(dat)
+  pleiotropy <- mr_pleiotropy_test(dat)
+  ivw <- mr_ivw(dat$beta.exposure,dat$beta.outcome,dat$se.exposure,dat$se.outcome)
+  heterogeneity <- mr_heterogeneity(dat)
+  egger <- mr_egger_regression(dat$beta.exposure,dat$beta.outcome,dat$se.exposure,dat$se.outcome)
+  
+  a[x,1] <- ss[i]
+  a[x,2] <- trait
+  a[x,3] <- ivw$b
+  a[x,4] <- ivw$se
+  a[x,5] <- ivw$pval
+  a[x,6] <- pleiotropy$egger_intercept
+  a[x,7] <- pleiotropy$se
+  a[x,8] <- pleiotropy$pval
+  a[x,9] <- heterogeneity$Q[heterogeneity$method == 'Inverse variance weighted']
+  a[x,10] <- heterogeneity$Q_pval[heterogeneity$method == 'Inverse variance weighted']
+  a[x,11] <- egger$nsnp
+}
+
+colnames(a) <- c('Exposure','Outcome', 'Beta_IVW', 'SE_IVW', 'Pvalue_IVW', 'Intercept _pleiotropy', 'SE_pleiotropy', 'Pvalue_pleiotropy', 'Q', 'Q_Pvalue', 'nsnp')
+write.table(a, file = 'result.txt', quote = F, col.names = T, row.names = F,sep = '\t')
 ```
